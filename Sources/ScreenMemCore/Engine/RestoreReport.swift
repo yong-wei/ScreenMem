@@ -5,6 +5,8 @@ public enum RestoreSkipReason: String, Codable, Equatable, Sendable {
     case displayMissing
     case displayAmbiguous
     case noCurrentWindowMatch
+    case monitoringExpired
+    case manualMovementDetected
 }
 
 public enum RestoreFailureReason: String, Codable, Equatable, Sendable {
@@ -45,14 +47,20 @@ public struct RestoreReport: Codable, Equatable, Sendable {
     public let restoredWindows: [RestoredWindowReport]
     public let skippedWindows: [SkippedRestoreReport]
     public let failedWindows: [FailedRestoreReport]
+    public let lateRestoredWindows: [RestoredWindowReport]
+    public let lateSkippedWindows: [SkippedRestoreReport]
 
     public init(
         restoredWindows: [RestoredWindowReport],
         skippedWindows: [SkippedRestoreReport],
-        failedWindows: [FailedRestoreReport]
+        failedWindows: [FailedRestoreReport],
+        lateRestoredWindows: [RestoredWindowReport] = [],
+        lateSkippedWindows: [SkippedRestoreReport] = []
     ) {
         self.restoredWindows = restoredWindows
         self.skippedWindows = skippedWindows
         self.failedWindows = failedWindows
+        self.lateRestoredWindows = lateRestoredWindows
+        self.lateSkippedWindows = lateSkippedWindows
     }
 }

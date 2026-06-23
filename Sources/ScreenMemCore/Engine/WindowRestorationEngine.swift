@@ -34,6 +34,23 @@ public struct WindowRestorationEngine: Sendable {
         )
     }
 
+    public func restoreExactProfileStartingLateMonitor(
+        profile: Profile?,
+        displaySnapshots: [DisplaySnapshot],
+        currentWindows: [WindowSnapshot],
+        startedAt: Date
+    ) -> RestorationRunResult {
+        let report = restoreExactProfile(
+            profile: profile,
+            displaySnapshots: displaySnapshots,
+            currentWindows: currentWindows
+        )
+        let monitor = profile.map {
+            LateWindowMonitor.start(profile: $0, restoredReport: report, startedAt: startedAt)
+        }
+        return RestorationRunResult(report: report, lateWindowMonitor: monitor?.pendingStates.isEmpty == true ? nil : monitor)
+    }
+
     public func restorePartialProfile(
         profile: Profile,
         displaySnapshots: [DisplaySnapshot],
@@ -45,6 +62,21 @@ public struct WindowRestorationEngine: Sendable {
             currentWindows: currentWindows,
             allowFallbackDisplays: true
         )
+    }
+
+    public func restorePartialProfileStartingLateMonitor(
+        profile: Profile,
+        displaySnapshots: [DisplaySnapshot],
+        currentWindows: [WindowSnapshot],
+        startedAt: Date
+    ) -> RestorationRunResult {
+        let report = restorePartialProfile(
+            profile: profile,
+            displaySnapshots: displaySnapshots,
+            currentWindows: currentWindows
+        )
+        let monitor = LateWindowMonitor.start(profile: profile, restoredReport: report, startedAt: startedAt)
+        return RestorationRunResult(report: report, lateWindowMonitor: monitor.pendingStates.isEmpty ? nil : monitor)
     }
 
     private func restore(
@@ -105,5 +137,15 @@ public struct WindowRestorationEngine: Sendable {
         let knownDisplays = displaySnapshots.filter { knownDisplayIDs.contains($0.identity.stableID) }
         return knownDisplays.first(where: { $0.identity.isBuiltIn })
             ?? knownDisplays.first(where: \.isMain)
+    }
+}
+
+public struct RestorationRunResult: Sendable {
+    public let report: RestoreReport
+    public let lateWindowMonitor: LateWindowMonitor?
+
+    public init(report: RestoreReport, lateWindowMonitor: LateWindowMonitor?) {
+        self.report = report
+        self.lateWindowMonitor = lateWindowMonitor
     }
 }

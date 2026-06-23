@@ -822,6 +822,186 @@ func checkPartialRestoreExitsToUnmanagedAndDoesNotLearn() throws {
     try expect(result.profileToSave == nil, "partial unmanaged flow should not write profile state")
 }
 
+func lateWindowProfile(display: DisplayIdentity, window: WindowSnapshot) -> Profile {
+    Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000040")!,
+        name: "Late",
+        createdAt: Date(timeIntervalSince1970: 1),
+        displayFingerprint: DisplaySetFingerprint.exact(for: [display]),
+        displays: [display],
+        windowStates: [learnedState(snapshot: window, display: display)]
+    )
+}
+
+func checkLateWindowRestoresOnceWithinMonitoringPeriod() throws {
+    let display = sampleDisplayIdentity("Late", builtIn: true)
+    let displaySnapshot = sampleDisplaySnapshot(display, orderIndex: 0)
+    let window = learningWindow(title: "Late")
+    let profile = lateWindowProfile(display: display, window: window)
+    let initialReport = RestoreReport(
+        restoredWindows: [],
+        skippedWindows: [SkippedRestoreReport(identity: LearnedWindowIdentity(snapshot: window), reason: .noCurrentWindowMatch)],
+        failedWindows: []
+    )
+    let monitor = LateWindowMonitor.start(
+        profile: profile,
+        restoredReport: initialReport,
+        startedAt: Date(timeIntervalSince1970: 10)
+    )
+    let recorder = MoveTargetRecorder()
+    let appeared = monitor.restoreNewWindows(
+        currentWindows: [window],
+        displaySnapshots: [displaySnapshot],
+        now: Date(timeIntervalSince1970: 20),
+        profileID: profile.id,
+        moveWindow: { _, frame in
+            recorder.append(frame)
+            return .moved
+        }
+    )
+
+    try expect(appeared.report.lateRestoredWindows.isEmpty, "first late observation should not move immediately")
+    try expect(recorder.snapshot().isEmpty, "first late observation should only record frame")
+    let result = try expectValue(appeared.monitor, "late monitor should remain active after first observation")
+        .restoreNewWindows(
+            currentWindows: [window],
+            displaySnapshots: [displaySnapshot],
+            now: Date(timeIntervalSince1970: 21),
+            profileID: profile.id,
+            moveWindow: { _, frame in
+                recorder.append(frame)
+                return .moved
+            }
+        )
+    try expect(result.report.lateRestoredWindows.count == 1, "late matching window should restore within monitoring period")
+    try expect(result.monitor == nil, "late restored window should be removed from monitor")
+    try expect(recorder.snapshot().count == 1, "late window should be moved once")
+}
+
+func checkRestorationRunStartsLateWindowMonitor() throws {
+    let display = sampleDisplayIdentity("Late", builtIn: true)
+    let displaySnapshot = sampleDisplaySnapshot(display, orderIndex: 0)
+    let window = learningWindow(title: "Late")
+    let profile = lateWindowProfile(display: display, window: window)
+    let engine = WindowRestorationEngine { _, _ in .moved }
+
+    let result = engine.restoreExactProfileStartingLateMonitor(
+        profile: profile,
+        displaySnapshots: [displaySnapshot],
+        currentWindows: [],
+        startedAt: Date(timeIntervalSince1970: 10)
+    )
+
+    try expect(result.report.skippedWindows.map(\.reason) == [.noCurrentWindowMatch], "initial restore should report unresolved learned state")
+    try expect(result.lateWindowMonitor?.pendingStates.map(\.identity) == [LearnedWindowIdentity(snapshot: window)], "restore run should start monitor for unresolved learned state")
+}
+
+func checkLateWindowMonitorExpires() throws {
+    let display = sampleDisplayIdentity("Late", builtIn: true)
+    let window = learningWindow(title: "Late")
+    let profile = lateWindowProfile(display: display, window: window)
+    let monitor = LateWindowMonitor(
+        profileID: profile.id,
+        startedAt: Date(timeIntervalSince1970: 10),
+        pendingStates: profile.windowStates
+    )
+    let recorder = MoveTargetRecorder()
+    let result = monitor.restoreNewWindows(
+        currentWindows: [window],
+        displaySnapshots: [sampleDisplaySnapshot(display, orderIndex: 0)],
+        now: Date(timeIntervalSince1970: 71),
+        profileID: profile.id,
+        moveWindow: { _, frame in
+            recorder.append(frame)
+            return .moved
+        }
+    )
+
+    try expect(result.monitor == nil, "late monitor should stop after expiration")
+    try expect(recorder.snapshot().isEmpty, "expired monitor should not move late windows")
+    try expect(result.report.lateSkippedWindows.map(\.reason) == [.monitoringExpired], "expired late window should be reported")
+}
+
+func checkLateWindowManualMovementIsRespected() throws {
+    let display = sampleDisplayIdentity("Late", builtIn: true)
+    let displaySnapshot = sampleDisplaySnapshot(display, orderIndex: 0)
+    let originalWindow = learningWindow(title: "Late")
+    let movedWindow = WindowSnapshot(
+        appName: originalWindow.appName,
+        bundleIdentifier: originalWindow.bundleIdentifier,
+        processIdentifier: originalWindow.processIdentifier,
+        appLocalOrdinal: originalWindow.appLocalOrdinal,
+        role: originalWindow.role,
+        subrole: originalWindow.subrole,
+        titleHint: originalWindow.titleHint,
+        frame: WindowRect(x: originalWindow.frame.x + 50, y: originalWindow.frame.y, width: originalWindow.frame.width, height: originalWindow.frame.height),
+        isMinimized: originalWindow.isMinimized,
+        canMove: originalWindow.canMove,
+        canResize: originalWindow.canResize
+    )
+    let profile = lateWindowProfile(display: display, window: originalWindow)
+    let monitor = LateWindowMonitor(
+        profileID: profile.id,
+        startedAt: Date(timeIntervalSince1970: 10),
+        pendingStates: profile.windowStates
+    )
+    let recorder = MoveTargetRecorder()
+    let appeared = monitor.restoreNewWindows(
+        currentWindows: [originalWindow],
+        displaySnapshots: [displaySnapshot],
+        now: Date(timeIntervalSince1970: 20),
+        profileID: profile.id,
+        moveWindow: { _, frame in
+            recorder.append(frame)
+            return .moved
+        }
+    )
+    let result = try expectValue(appeared.monitor, "late monitor should remain active after appearance")
+        .restoreNewWindows(
+            currentWindows: [movedWindow],
+            displaySnapshots: [displaySnapshot],
+            now: Date(timeIntervalSince1970: 21),
+            profileID: profile.id,
+            moveWindow: { _, frame in
+                recorder.append(frame)
+                return .moved
+            }
+        )
+
+    try expect(recorder.snapshot().isEmpty, "manually moved late window should not be restored")
+    try expect(result.report.lateSkippedWindows.map(\.reason) == [.manualMovementDetected], "manual movement should be reported")
+    try expect(result.monitor == nil, "manually moved late window should be removed from monitor")
+}
+
+func checkLateWindowRejectedMoveIsNotRetried() throws {
+    let display = sampleDisplayIdentity("Late", builtIn: true)
+    let displaySnapshot = sampleDisplaySnapshot(display, orderIndex: 0)
+    let window = learningWindow(title: "Late")
+    let profile = lateWindowProfile(display: display, window: window)
+    let monitor = LateWindowMonitor(
+        profileID: profile.id,
+        startedAt: Date(timeIntervalSince1970: 10),
+        pendingStates: profile.windowStates,
+        appearedFrames: [LearnedWindowIdentity(snapshot: window): window.frame]
+    )
+    let recorder = MoveAttemptRecorder()
+
+    let result = monitor.restoreNewWindows(
+        currentWindows: [window],
+        displaySnapshots: [displaySnapshot],
+        now: Date(timeIntervalSince1970: 20),
+        profileID: profile.id,
+        moveWindow: { snapshot, _ in
+            recorder.append(snapshot.titleHint ?? "")
+            return .rejected
+        }
+    )
+
+    try expect(result.report.failedWindows.map(\.identity.titleHint) == ["Late"], "rejected late restore should be reported")
+    try expect(result.monitor == nil, "rejected late restore should not be retried")
+    try expect(recorder.snapshot() == ["Late"], "rejected late restore should be attempted once")
+}
+
 func checkUnknownDisplaySetDoesNotCreateProfileAutomatically() throws {
     let tempRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("ScreenMemShellChecks-\(UUID().uuidString)")
@@ -923,6 +1103,11 @@ enum ScreenMemShellChecks {
             ("partial restore falls back to known built-in display", checkPartialRestoreFallsBackToKnownBuiltInDisplay),
             ("partial restore falls back to known main display without built-in", checkPartialRestoreFallsBackToKnownMainDisplayWithoutBuiltIn),
             ("partial restore exits to unmanaged and does not learn", checkPartialRestoreExitsToUnmanagedAndDoesNotLearn),
+            ("restoration run starts late window monitor", checkRestorationRunStartsLateWindowMonitor),
+            ("late window restores once within monitoring period", checkLateWindowRestoresOnceWithinMonitoringPeriod),
+            ("late window monitor expires", checkLateWindowMonitorExpires),
+            ("late window manual movement is respected", checkLateWindowManualMovementIsRespected),
+            ("late window rejected move is not retried", checkLateWindowRejectedMoveIsNotRetried),
             ("unknown display set does not create a profile automatically", checkUnknownDisplaySetDoesNotCreateProfileAutomatically),
             ("required module folders exist", checkRequiredModuleFoldersExist),
             ("README documents MVP scope and non-goals", checkReadmeDocumentsMvpScopeAndNonGoals),
