@@ -466,6 +466,168 @@ func checkLearningTombstonesRecentlyMissingWindows() throws {
     try expect(expired.profileToSave?.windowStates.isEmpty == true, "expired tombstone should be deleted")
 }
 
+func checkRestorationStateMachineProtectsLearningWrites() throws {
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+    let protected = RestorationStateMachine.displayChangeDetected(currentState: .learning, now: now)
+
+    try expect(!RestorationStateMachine.allowsLearningWrites(protected), "display change should stop learning writes")
+
+    let waiting = RestorationStateMachine.displaysSampledStable(
+        currentState: protected,
+        now: now.addingTimeInterval(1),
+        stabilizationInterval: 2
+    )
+    try expect(!RestorationStateMachine.allowsLearningWrites(waiting), "stable wait should still protect learning writes")
+
+    let restoring = RestorationStateMachine.displaysSampledStable(
+        currentState: waiting,
+        now: now.addingTimeInterval(4),
+        stabilizationInterval: 2
+    )
+    try expect(restoring == .restoring, "stable display set should enter restoring state")
+    try expect(
+        RestorationStateMachine.restorationCompleted(currentState: restoring) == .learning,
+        "completed restoration should return to learning"
+    )
+}
+
+func restorationProfile(display: DisplayIdentity, states: [WindowState]) -> Profile {
+    Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000020")!,
+        name: "Restore",
+        createdAt: Date(timeIntervalSince1970: 1),
+        displayFingerprint: DisplaySetFingerprint.exact(for: [display]),
+        displays: [display],
+        windowStates: states
+    )
+}
+
+func learnedState(
+    snapshot: WindowSnapshot,
+    display: DisplayIdentity,
+    normalizedFrame: NormalizedRect = NormalizedRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4)
+) -> WindowState {
+    WindowState(
+        identity: LearnedWindowIdentity(snapshot: snapshot),
+        normalizedFrame: normalizedFrame,
+        displayStableID: display.stableID,
+        learnedAt: Date(timeIntervalSince1970: 2),
+        tombstone: nil
+    )
+}
+
+final class MoveAttemptRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var titles: [String] = []
+
+    func append(_ title: String) {
+        lock.lock()
+        titles.append(title)
+        lock.unlock()
+    }
+
+    func snapshot() -> [String] {
+        lock.lock()
+        let currentTitles = titles
+        lock.unlock()
+        return currentTitles
+    }
+}
+
+func checkWindowMatcherMatchesLearnedIdentity() throws {
+    let first = learningWindow(title: "A", ordinal: 0)
+    let second = learningWindow(title: "B", ordinal: 1)
+    let display = sampleDisplayIdentity("R")
+    let matches = WindowMatcher.match(
+        currentWindows: [second, first],
+        learnedStates: [learnedState(snapshot: first, display: display)]
+    )
+
+    try expect(matches.map(\.snapshot.titleHint) == ["A"], "matcher should match by learned identity")
+}
+
+func checkExactProfileRestoresMatchedWindowsAndContinuesAfterFailure() throws {
+    let display = sampleDisplayIdentity("R", builtIn: true)
+    let displaySnapshot = sampleDisplaySnapshot(display, orderIndex: 0)
+    let first = learningWindow(title: "A", ordinal: 0)
+    let second = learningWindow(title: "B", ordinal: 1)
+    let firstState = learnedState(snapshot: first, display: display)
+    let secondState = learnedState(
+        snapshot: second,
+        display: display,
+        normalizedFrame: NormalizedRect(x: 0.2, y: 0.2, width: 0.3, height: 0.4)
+    )
+    let profile = restorationProfile(display: display, states: [firstState, secondState])
+    let recorder = MoveAttemptRecorder()
+    let engine = WindowRestorationEngine { snapshot, _ in
+        recorder.append(snapshot.titleHint ?? "")
+        return snapshot.titleHint == "A" ? .rejected : .moved
+    }
+
+    let report = engine.restoreExactProfile(
+        profile: profile,
+        displaySnapshots: [displaySnapshot],
+        currentWindows: [first, second]
+    )
+
+    try expect(recorder.snapshot() == ["A", "B"], "restore should continue after one rejected move")
+    try expect(report.failedWindows.map(\.identity.titleHint) == ["A"], "restore report should record rejected window")
+    try expect(report.restoredWindows.map(\.identity.titleHint) == ["B"], "restore report should record restored window")
+}
+
+func checkRestorationRequiresExactProfile() throws {
+    let display = sampleDisplayIdentity("R", builtIn: true)
+    let otherDisplay = sampleDisplayIdentity("Other")
+    let profile = restorationProfile(display: display, states: [])
+    let engine = WindowRestorationEngine { _, _ in .moved }
+
+    let report = engine.restoreExactProfile(
+        profile: profile,
+        displaySnapshots: [sampleDisplaySnapshot(otherDisplay, orderIndex: 0)],
+        currentWindows: []
+    )
+
+    try expect(report.restoredWindows.isEmpty, "non-exact profile should not restore windows")
+    try expect(report.skippedWindows.map(\.reason) == [.noExactProfile], "non-exact profile should be reported")
+}
+
+func checkRestorationSkipsAmbiguousDisplaysWithoutCrashing() throws {
+    let display = sampleDisplayIdentity("D")
+    let firstDisplay = DisplaySnapshot(
+        identity: display,
+        frame: DisplayRect(x: 0, y: 0, width: 1000, height: 800),
+        visibleFrame: DisplayRect(x: 0, y: 0, width: 1000, height: 800),
+        isMain: true,
+        orderIndex: 0
+    )
+    let duplicateDisplay = DisplaySnapshot(
+        identity: display,
+        frame: DisplayRect(x: 1000, y: 0, width: 1000, height: 800),
+        visibleFrame: DisplayRect(x: 1000, y: 0, width: 1000, height: 800),
+        isMain: false,
+        orderIndex: 1
+    )
+    let window = learningWindow(title: "A")
+    let profile = Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000021")!,
+        name: "Ambiguous",
+        createdAt: Date(timeIntervalSince1970: 1),
+        displayFingerprint: DisplaySetFingerprint.exact(for: [display, display]),
+        displays: [display, display],
+        windowStates: [learnedState(snapshot: window, display: display)]
+    )
+    let engine = WindowRestorationEngine { _, _ in .moved }
+
+    let report = engine.restoreExactProfile(
+        profile: profile,
+        displaySnapshots: [firstDisplay, duplicateDisplay],
+        currentWindows: [window]
+    )
+
+    try expect(report.restoredWindows.isEmpty, "ambiguous display target should not restore")
+    try expect(report.skippedWindows.map(\.reason) == [.displayAmbiguous], "ambiguous display target should be reported")
+}
+
 func checkUnknownDisplaySetDoesNotCreateProfileAutomatically() throws {
     let tempRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("ScreenMemShellChecks-\(UUID().uuidString)")
@@ -558,6 +720,11 @@ enum ScreenMemShellChecks {
             ("learning debounces stable window state", checkLearningDebouncesStableWindowState),
             ("learning assigns windows to intersecting display", checkLearningAssignsWindowsToIntersectingDisplay),
             ("learning tombstones recently missing windows", checkLearningTombstonesRecentlyMissingWindows),
+            ("restoration state machine protects learning writes", checkRestorationStateMachineProtectsLearningWrites),
+            ("window matcher matches learned identity", checkWindowMatcherMatchesLearnedIdentity),
+            ("exact profile restores matched windows and continues after failure", checkExactProfileRestoresMatchedWindowsAndContinuesAfterFailure),
+            ("restoration requires exact profile", checkRestorationRequiresExactProfile),
+            ("restoration skips ambiguous displays without crashing", checkRestorationSkipsAmbiguousDisplaysWithoutCrashing),
             ("unknown display set does not create a profile automatically", checkUnknownDisplaySetDoesNotCreateProfileAutomatically),
             ("required module folders exist", checkRequiredModuleFoldersExist),
             ("README documents MVP scope and non-goals", checkReadmeDocumentsMvpScopeAndNonGoals),
