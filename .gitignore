@@ -1,0 +1,29 @@
+.DS_Store
+
+# Local agent/runtime state
+.claude/
+.serena/
+.wolf/
+.codex/local/
+
+# Tool-generated graph databases and logs
+.codegraph/
+.code-review-graph/
+
+# Build outputs
+.build/
+DerivedData/
+build/
+
+# Logs and temporary files
+.logs/
+*.log
+tmp/
+.tmp/
+
+# SwiftPM / Xcode local user state
+.swiftpm/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+

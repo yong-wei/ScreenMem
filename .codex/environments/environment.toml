@@ -1,0 +1,7 @@
+[commands]
+openwolf-status = "rtk openwolf status"
+openwolf-scan = "rtk openwolf scan --check"
+codegraph-status = "rtk codegraph status ."
+crg-status = "rtk code-review-graph status --repo ."
+openspec-validate = "rtk openspec validate --changes --strict"
+

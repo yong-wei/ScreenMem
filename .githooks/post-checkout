@@ -1,0 +1,13 @@
+#!/bin/sh
+# Rebuild local code graphs after branch checkouts.
+
+if [ "$3" != "1" ]; then
+    exit 0
+fi
+
+. "$(git rev-parse --show-toplevel)/.githooks/crg-hook-lib.sh"
+crg_run build
+
+. "$(git rev-parse --show-toplevel)/.githooks/codegraph-hook-lib.sh"
+codegraph_run sync
+
