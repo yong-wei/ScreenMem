@@ -20,10 +20,12 @@ build/
 *.log
 tmp/
 .tmp/
+.env
+.env.*
+.env.openspec-buddy
 
 # SwiftPM / Xcode local user state
 .swiftpm/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcuserstate
-
