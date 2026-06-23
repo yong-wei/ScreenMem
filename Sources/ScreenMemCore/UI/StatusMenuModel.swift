@@ -11,6 +11,11 @@ public struct StatusMenuModel: Equatable, Sendable {
         statusTitle: ApplicationIdentity.statusTitle,
         items: [
             StatusMenuItem(title: ApplicationIdentity.statusTitle, isEnabled: false, command: .none),
+            StatusMenuItem(
+                title: "Create Profile from Current Displays",
+                isEnabled: true,
+                command: .createProfileFromCurrentDisplays
+            ),
             StatusMenuItem(title: "Quit \(ApplicationIdentity.name)", isEnabled: true, command: .quit)
         ]
     )
@@ -30,5 +35,6 @@ public struct StatusMenuItem: Equatable, Sendable {
 
 public enum StatusMenuCommand: Equatable, Sendable {
     case none
+    case createProfileFromCurrentDisplays
     case quit
 }
