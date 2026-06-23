@@ -268,6 +268,48 @@ func checkCurrentDisplaySamplerEnumeratesDisplays() throws {
     }
 }
 
+@MainActor
+func checkMockProvidersInjectDisplaysAndWindows() throws {
+    let display = ScreenMemFixtures.display("Mock", builtIn: true)
+    let displaySnapshot = ScreenMemFixtures.displaySnapshot(display, orderIndex: 0)
+    let window = ScreenMemFixtures.window(title: "Mock Window")
+    let displayProvider = MockDisplayProvider(snapshots: [displaySnapshot])
+    let windowProvider = MockWindowProvider(inventory: WindowInventory(
+        permissionState: .granted,
+        restorationCandidates: [window],
+        skippedWindows: []
+    ))
+
+    try expect(displayProvider.currentDisplaySnapshots() == [displaySnapshot], "mock display provider should inject display snapshots")
+    try expect(windowProvider.currentWindowInventory().restorationCandidates == [window], "mock window provider should inject window snapshots")
+}
+
+@MainActor
+func checkMockProvidersDriveProfileSelectionAndRestore() throws {
+    let display = ScreenMemFixtures.display("Provider", builtIn: true)
+    let snapshot = ScreenMemFixtures.displaySnapshot(display, orderIndex: 0)
+    let window = ScreenMemFixtures.window(title: "Provider Window")
+    let state = learnedState(snapshot: window, display: display)
+    let profile = ScreenMemFixtures.profile(display: display, states: [state])
+    let displayProvider = MockDisplayProvider(snapshots: [snapshot])
+    let windowProvider = MockWindowProvider(inventory: WindowInventory(
+        permissionState: .granted,
+        restorationCandidates: [window],
+        skippedWindows: []
+    ))
+    let context = ProviderBackedRestorationContext(
+        displayProvider: displayProvider,
+        windowProvider: windowProvider,
+        restorationEngine: WindowRestorationEngine { _, _ in .moved }
+    )
+
+    try expect(context.selectProfile(from: [profile]) == .exact(profile), "mock display provider should drive exact profile selection")
+    try expect(
+        context.restoreExactProfile(profile).restoredWindows.map(\.identity) == [state.identity],
+        "mock display and window providers should drive restoration without live macOS state"
+    )
+}
+
 func checkProfileStoreCreatesAndLoadsUserProfiles() throws {
     let tempRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("ScreenMemShellChecks-\(UUID().uuidString)")
@@ -292,6 +334,13 @@ func checkProfileStoreCreatesAndLoadsUserProfiles() throws {
     let matchingProfile = try store.matchingProfile(for: [snapshot])
     try expect(loadedProfiles == [profile], "profile store should load saved profiles")
     try expect(matchingProfile == profile, "matching profile should be found by fingerprint")
+}
+
+func checkProfileStoreUsesAtomicWrites() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let source = try String(contentsOf: root.appendingPathComponent("Sources/ScreenMemCore/Profile/ProfileStore.swift"))
+
+    try expect(source.contains("options: [.atomic]"), "profile store should use atomic JSON writes")
 }
 
 func checkNormalizedRectClampsAgainstVisibleFrame() throws {
@@ -1169,7 +1218,29 @@ func checkCodexEnvironmentExposesAppRunner() throws {
     let environment = try String(contentsOf: root.appendingPathComponent(".codex/environments/environment.toml"))
 
     try expect(environment.contains("app-runner"), "environment should expose an app runner command")
+    try expect(environment.contains("build = \"rtk swift build\""), "environment should expose an independent build command")
     try expect(environment.contains("script/build_and_run.sh"), "app runner should call the local build script")
+    try expect(environment.contains("full-verification"), "environment should expose a full verification command")
+}
+
+func checkManualMVPMatrixIsDocumented() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let matrix = try String(contentsOf: root.appendingPathComponent("docs/qa/manual-mvp-matrix.md"))
+    let requiredCases = [
+        "MacBook-only",
+        "Dual external displays",
+        "Sidecar without profile",
+        "Sidecar with profile",
+        "Closed windows",
+        "Chrome multi-window",
+        "Minimized windows",
+        "Fullscreen windows"
+    ]
+
+    for testCase in requiredCases {
+        try expect(matrix.contains(testCase), "manual matrix should include \(testCase)")
+    }
+    try expect(matrix.contains("Blocked:"), "manual matrix should record blocked cases with reasons")
 }
 
 @main
@@ -1187,7 +1258,10 @@ enum ScreenMemShellChecks {
             ("ordinary window filtering and ordinals", checkOrdinaryWindowFilteringAndOrdinals),
             ("display fingerprint is order independent", checkDisplayFingerprintIsOrderIndependent),
             ("current display sampler enumerates displays", checkCurrentDisplaySamplerEnumeratesDisplays),
+            ("mock providers inject displays and windows", checkMockProvidersInjectDisplaysAndWindows),
+            ("mock providers drive profile selection and restore", checkMockProvidersDriveProfileSelectionAndRestore),
             ("profile store creates and loads user profiles", checkProfileStoreCreatesAndLoadsUserProfiles),
+            ("profile store uses atomic writes", checkProfileStoreUsesAtomicWrites),
             ("normalized rect clamps against visible frame", checkNormalizedRectClampsAgainstVisibleFrame),
             ("learning writes only for exact learning state", checkLearningWritesOnlyForExactLearningState),
             ("learning debounces stable window state", checkLearningDebouncesStableWindowState),
@@ -1212,7 +1286,8 @@ enum ScreenMemShellChecks {
             ("README documents MVP scope and non-goals", checkReadmeDocumentsMvpScopeAndNonGoals),
             ("build runner builds and launches ScreenMem executable", checkBuildRunnerBuildsAndLaunchesScreenMemExecutable),
             ("status menu rebuild reuses status item", checkStatusMenuRebuildReusesStatusItem),
-            ("Codex environment exposes app runner", checkCodexEnvironmentExposesAppRunner)
+            ("Codex environment exposes app runner", checkCodexEnvironmentExposesAppRunner),
+            ("manual MVP matrix is documented", checkManualMVPMatrixIsDocumented)
         ]
 
         var failures: [String] = []

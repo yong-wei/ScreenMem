@@ -9,13 +9,15 @@ final class ScreenMemApplication: NSObject, NSApplicationDelegate {
     private var statusBarController: StatusBarController?
     private let profileStore: ProfileStore
     private let permissionService: AccessibilityPermissionService
+    private let displayProvider: any DisplayProviding
     private var pauseState = AutomationPauseState.none
     private var recentRestoreReport: RestoreReport?
     private var detailWindowController: NSWindowController?
 
-    override init() {
+    init(displayProvider: any DisplayProviding = LiveDisplayProvider()) {
         self.profileStore = .default
         self.permissionService = AccessibilityPermissionService()
+        self.displayProvider = displayProvider
         super.init()
     }
 
@@ -46,7 +48,7 @@ final class ScreenMemApplication: NSObject, NSApplicationDelegate {
         let viewState = MenuViewState(
             profileName: (try? profileStore.loadProfiles().first?.name) ?? nil,
             automationState: pauseState.allPaused ? .paused : .learning,
-            displayCount: DisplaySampler.currentSnapshots().count,
+            displayCount: displayProvider.currentDisplaySnapshots().count,
             permissionState: permissionState,
             pauseState: pauseState,
             recentReport: RestoreReportViewModel(report: recentRestoreReport)
@@ -90,7 +92,7 @@ final class ScreenMemApplication: NSObject, NSApplicationDelegate {
 
     private func createProfileFromCurrentDisplays() {
         do {
-            let snapshots = DisplaySampler.currentSnapshots()
+            let snapshots = displayProvider.currentDisplaySnapshots()
             let timestamp = ISO8601DateFormatter().string(from: Date())
             let profile = try profileStore.createProfileFromCurrentDisplays(
                 name: "Display Profile \(timestamp)",
