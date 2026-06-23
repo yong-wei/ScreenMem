@@ -5,13 +5,16 @@ import ScreenMemCore
 final class StatusBarController {
     private let statusItem: NSStatusItem
     private let onCreateProfileFromCurrentDisplays: () -> Void
+    private let onOpenAccessibilitySettings: () -> Void
 
     init(
         menuModel: StatusMenuModel,
         statusBar: NSStatusBar = .system,
-        onCreateProfileFromCurrentDisplays: @escaping () -> Void = {}
+        onCreateProfileFromCurrentDisplays: @escaping () -> Void = {},
+        onOpenAccessibilitySettings: @escaping () -> Void = {}
     ) {
         self.onCreateProfileFromCurrentDisplays = onCreateProfileFromCurrentDisplays
+        self.onOpenAccessibilitySettings = onOpenAccessibilitySettings
         statusItem = statusBar.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = ApplicationIdentity.name
         statusItem.menu = makeMenu(from: menuModel)
@@ -35,6 +38,15 @@ final class StatusBarController {
                 menuItem.target = self
                 menuItem.isEnabled = item.isEnabled
                 menu.addItem(menuItem)
+            case .openAccessibilitySettings:
+                let menuItem = NSMenuItem(
+                    title: item.title,
+                    action: #selector(openAccessibilitySettings(_:)),
+                    keyEquivalent: ""
+                )
+                menuItem.target = self
+                menuItem.isEnabled = item.isEnabled
+                menu.addItem(menuItem)
             case .quit:
                 menu.addItem(.separator())
                 let menuItem = NSMenuItem(
@@ -53,5 +65,9 @@ final class StatusBarController {
 
     @objc private func createProfileFromCurrentDisplays(_ sender: NSMenuItem) {
         onCreateProfileFromCurrentDisplays()
+    }
+
+    @objc private func openAccessibilitySettings(_ sender: NSMenuItem) {
+        onOpenAccessibilitySettings()
     }
 }

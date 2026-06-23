@@ -8,9 +8,11 @@ final class ScreenMemApplication: NSObject, NSApplicationDelegate {
 
     private var statusBarController: StatusBarController?
     private let profileStore: ProfileStore
+    private let permissionService: AccessibilityPermissionService
 
     override init() {
         self.profileStore = .default
+        self.permissionService = AccessibilityPermissionService()
         super.init()
     }
 
@@ -29,10 +31,14 @@ final class ScreenMemApplication: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let permissionState = permissionService.permissionState()
         statusBarController = StatusBarController(
-            menuModel: .default,
+            menuModel: StatusMenuModel.make(permissionState: permissionState),
             onCreateProfileFromCurrentDisplays: { [weak self] in
                 self?.createProfileFromCurrentDisplays()
+            },
+            onOpenAccessibilitySettings: {
+                NSWorkspace.shared.open(AccessibilityPermissionService.settingsURL)
             }
         )
     }

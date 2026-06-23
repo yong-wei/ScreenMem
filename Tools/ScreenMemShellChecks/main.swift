@@ -31,6 +31,93 @@ func checkDefaultStatusMenuContainsStatusTextAndQuitCommand() throws {
     try expect(menu.items.last?.command == .quit, "last menu item should quit the app")
 }
 
+func checkPermissionMissingMenuExposesSettingsAction() throws {
+    let menu = StatusMenuModel.make(permissionState: .permissionMissing)
+
+    try expect(menu.items.map(\.title).contains("Permission Missing"), "permission missing state should be visible")
+    try expect(
+        menu.items.contains { $0.command == .openAccessibilitySettings && $0.isEnabled },
+        "permission missing menu should expose Accessibility settings action"
+    )
+}
+
+func rawWindow(
+    processIdentifier: Int32,
+    title: String,
+    role: String? = "AXWindow",
+    subrole: String? = "AXStandardWindow",
+    frame: WindowRect? = WindowRect(x: 10, y: 20, width: 400, height: 300),
+    canMove: Bool = true,
+    canResize: Bool = true,
+    isApplicationHidden: Bool = false,
+    isFullscreenLike: Bool = false
+) -> RawWindowRecord {
+    RawWindowRecord(
+        appName: "Fixture App",
+        bundleIdentifier: "dev.screenmem.fixture",
+        processIdentifier: processIdentifier,
+        role: role,
+        subrole: subrole,
+        titleHint: title,
+        frame: frame,
+        isMinimized: false,
+        canMove: canMove,
+        canResize: canResize,
+        isApplicationHidden: isApplicationHidden,
+        isFullscreenLike: isFullscreenLike
+    )
+}
+
+func checkPermissionMissingPreventsWindowEnumeration() throws {
+    let permissionService = AccessibilityPermissionService { _ in false }
+    let inventory = WindowInventoryFilter.makeInventory(
+        permissionState: permissionService.permissionState(),
+        records: [rawWindow(processIdentifier: 100, title: "Should Not Enumerate")]
+    )
+
+    try expect(inventory.permissionState == .permissionMissing, "inventory should report missing permission")
+    try expect(inventory.restorationCandidates.isEmpty, "missing permission should not produce candidates")
+    try expect(inventory.skippedWindows.isEmpty, "missing permission should not inspect skipped windows")
+}
+
+func checkOrdinaryWindowFilteringAndOrdinals() throws {
+    let inventory = WindowInventoryFilter.makeInventory(
+        permissionState: .granted,
+        records: [
+            rawWindow(processIdentifier: 100, title: "First"),
+            rawWindow(processIdentifier: 100, title: "Second"),
+            rawWindow(processIdentifier: 200, title: "Fullscreen", isFullscreenLike: true),
+            rawWindow(processIdentifier: 201, title: "Hidden", isApplicationHidden: true),
+            rawWindow(processIdentifier: 202, title: "System", role: "AXSheet"),
+            rawWindow(processIdentifier: 203, title: "Fixed", canMove: false),
+            rawWindow(processIdentifier: 204, title: "Locked Size", canResize: false),
+            rawWindow(processIdentifier: 205, title: "No Frame", frame: nil)
+        ]
+    )
+
+    try expect(inventory.permissionState == .granted, "inventory should report granted permission")
+    try expect(inventory.restorationCandidates.count == 2, "only ordinary windows should be candidates")
+    try expect(
+        inventory.restorationCandidates.map(\.appLocalOrdinal) == [0, 1],
+        "multiple app windows should receive stable app-local ordinals"
+    )
+    try expect(
+        inventory.restorationCandidates.map(\.titleHint) == ["First", "Second"],
+        "ordinary windows should preserve title hints"
+    )
+    try expect(
+        Set(inventory.skippedWindows.map(\.reason)) == [
+            .fullscreenLike,
+            .hiddenApplication,
+            .systemSpecial,
+            .nonMovable,
+            .nonResizable,
+            .missingFrame
+        ],
+        "unsupported windows should record skip reasons"
+    )
+}
+
 func sampleDisplayIdentity(_ suffix: String, builtIn: Bool = false) -> DisplayIdentity {
     DisplayIdentity(
         isBuiltIn: builtIn,
@@ -192,6 +279,9 @@ enum ScreenMemShellChecks {
     static func main() {
         let checks: [(String, () throws -> Void)] = [
             ("default status menu contains status text and quit command", checkDefaultStatusMenuContainsStatusTextAndQuitCommand),
+            ("permission missing menu exposes settings action", checkPermissionMissingMenuExposesSettingsAction),
+            ("permission missing prevents window enumeration", checkPermissionMissingPreventsWindowEnumeration),
+            ("ordinary window filtering and ordinals", checkOrdinaryWindowFilteringAndOrdinals),
             ("display fingerprint is order independent", checkDisplayFingerprintIsOrderIndependent),
             ("current display sampler enumerates displays", checkCurrentDisplaySamplerEnumeratesDisplays),
             ("profile store creates and loads user profiles", checkProfileStoreCreatesAndLoadsUserProfiles),

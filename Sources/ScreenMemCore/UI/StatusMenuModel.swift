@@ -7,18 +7,33 @@ public struct StatusMenuModel: Equatable, Sendable {
         self.items = items
     }
 
-    public static let `default` = StatusMenuModel(
-        statusTitle: ApplicationIdentity.statusTitle,
-        items: [
-            StatusMenuItem(title: ApplicationIdentity.statusTitle, isEnabled: false, command: .none),
-            StatusMenuItem(
-                title: "Create Profile from Current Displays",
-                isEnabled: true,
-                command: .createProfileFromCurrentDisplays
-            ),
-            StatusMenuItem(title: "Quit \(ApplicationIdentity.name)", isEnabled: true, command: .quit)
-        ]
-    )
+    public static let `default` = StatusMenuModel.make(permissionState: .granted)
+
+    public static func make(permissionState: AccessibilityPermissionState) -> StatusMenuModel {
+        let permissionItems: [StatusMenuItem] = switch permissionState {
+        case .granted:
+            []
+        case .permissionMissing:
+            [
+                StatusMenuItem(title: "Permission Missing", isEnabled: false, command: .none),
+                StatusMenuItem(title: "Open Accessibility Settings", isEnabled: true, command: .openAccessibilitySettings)
+            ]
+        }
+
+        return StatusMenuModel(
+            statusTitle: ApplicationIdentity.statusTitle,
+            items: [
+                StatusMenuItem(title: ApplicationIdentity.statusTitle, isEnabled: false, command: .none),
+                StatusMenuItem(
+                    title: "Create Profile from Current Displays",
+                    isEnabled: true,
+                    command: .createProfileFromCurrentDisplays
+                )
+            ] + permissionItems + [
+                StatusMenuItem(title: "Quit \(ApplicationIdentity.name)", isEnabled: true, command: .quit)
+            ]
+        )
+    }
 }
 
 public struct StatusMenuItem: Equatable, Sendable {
@@ -36,5 +51,6 @@ public struct StatusMenuItem: Equatable, Sendable {
 public enum StatusMenuCommand: Equatable, Sendable {
     case none
     case createProfileFromCurrentDisplays
+    case openAccessibilitySettings
     case quit
 }
