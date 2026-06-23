@@ -11,6 +11,17 @@ func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     }
 }
 
+func expectClose(_ actual: Double, _ expected: Double, _ message: String) throws {
+    try expect(abs(actual - expected) < 0.000_001, message)
+}
+
+func expectValue<T>(_ value: T?, _ message: String) throws -> T {
+    guard let value else {
+        throw CheckFailure(description: message)
+    }
+    return value
+}
+
 func checkDefaultStatusMenuContainsStatusTextAndQuitCommand() throws {
     let menu = StatusMenuModel.default
 
@@ -198,6 +209,263 @@ func checkProfileStoreCreatesAndLoadsUserProfiles() throws {
     try expect(matchingProfile == profile, "matching profile should be found by fingerprint")
 }
 
+func checkNormalizedRectClampsAgainstVisibleFrame() throws {
+    let visibleFrame = DisplayRect(x: 100, y: 50, width: 1000, height: 500)
+    let windowFrame = WindowRect(x: 50, y: 100, width: 1200, height: 250)
+    let normalized = WindowGeometryNormalizer.normalize(windowFrame, in: visibleFrame)
+
+    try expect(normalized.x == 0, "normalized x should clamp below visible frame")
+    try expect(normalized.y == 0.1, "normalized y should be relative to visible frame")
+    try expect(normalized.width == 1, "normalized width should clamp to visible frame")
+    try expect(normalized.height == 0.5, "normalized height should be relative to visible frame")
+
+    let denormalized = WindowGeometryNormalizer.denormalize(normalized, in: visibleFrame)
+    try expect(denormalized.x == 100, "denormalized x should use visible frame origin")
+    try expect(denormalized.y == 100, "denormalized y should use visible frame origin")
+    try expect(denormalized.width == 1000, "denormalized width should use visible frame width")
+    try expect(denormalized.height == 250, "denormalized height should use visible frame height")
+
+    let overflowing = WindowGeometryNormalizer.denormalize(
+        NormalizedRect(x: 0.9, y: 0.8, width: 0.4, height: 0.4),
+        in: visibleFrame
+    )
+    try expect(overflowing.x + overflowing.width <= visibleFrame.x + visibleFrame.width, "denormalized rect should not overflow right edge")
+    try expect(overflowing.y + overflowing.height <= visibleFrame.y + visibleFrame.height, "denormalized rect should not overflow bottom edge")
+}
+
+func learningProfile(display: DisplayIdentity, createdAt: Date = Date(timeIntervalSince1970: 1)) -> Profile {
+    Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!,
+        name: "Learning",
+        createdAt: createdAt,
+        displayFingerprint: DisplaySetFingerprint.exact(for: [display]),
+        displays: [display],
+        windowStates: []
+    )
+}
+
+func learningWindow(title: String, ordinal: Int = 0) -> WindowSnapshot {
+    WindowSnapshot(
+        appName: "Fixture App",
+        bundleIdentifier: "dev.screenmem.fixture",
+        processIdentifier: 300,
+        appLocalOrdinal: ordinal,
+        role: "AXWindow",
+        subrole: "AXStandardWindow",
+        titleHint: title,
+        frame: WindowRect(x: 100, y: 100, width: 400, height: 300),
+        isMinimized: false,
+        canMove: true,
+        canResize: true
+    )
+}
+
+func learningWindow(title: String, x: Double, y: Double, width: Double = 400, height: Double = 300) -> WindowSnapshot {
+    WindowSnapshot(
+        appName: "Fixture App",
+        bundleIdentifier: "dev.screenmem.fixture",
+        processIdentifier: 300,
+        appLocalOrdinal: 0,
+        role: "AXWindow",
+        subrole: "AXStandardWindow",
+        titleHint: title,
+        frame: WindowRect(x: x, y: y, width: width, height: height),
+        isMinimized: false,
+        canMove: true,
+        canResize: true
+    )
+}
+
+func checkLearningWritesOnlyForExactLearningState() throws {
+    let display = sampleDisplayIdentity("L", builtIn: true)
+    let matchingSnapshot = sampleDisplaySnapshot(display, orderIndex: 0)
+    let otherSnapshot = sampleDisplaySnapshot(sampleDisplayIdentity("X"), orderIndex: 0)
+    let service = ProfileLearningService(configuration: ProfileLearningConfiguration(debounceInterval: 1))
+    let profile = learningProfile(display: display)
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+
+    let stopped = service.poll(
+        mode: .stopped,
+        profile: profile,
+        displaySnapshots: [matchingSnapshot],
+        windowSnapshots: [learningWindow(title: "A")],
+        priorSample: nil,
+        now: now
+    )
+    try expect(stopped.profileToSave == nil && stopped.sample == nil, "stopped mode should not write or sample")
+
+    let unknownDisplay = service.poll(
+        mode: .learning,
+        profile: profile,
+        displaySnapshots: [otherSnapshot],
+        windowSnapshots: [learningWindow(title: "A")],
+        priorSample: nil,
+        now: now
+    )
+    try expect(unknownDisplay.profileToSave == nil && unknownDisplay.sample == nil, "unknown display set should not write")
+}
+
+func checkLearningDebouncesStableWindowState() throws {
+    let display = sampleDisplayIdentity("L", builtIn: true)
+    let snapshot = sampleDisplaySnapshot(display, orderIndex: 0)
+    let service = ProfileLearningService(configuration: ProfileLearningConfiguration(debounceInterval: 1))
+    let profile = learningProfile(display: display)
+    let firstTime = Date(timeIntervalSince1970: 2_000_000_000)
+
+    let first = service.poll(
+        mode: .learning,
+        profile: profile,
+        displaySnapshots: [snapshot],
+        windowSnapshots: [learningWindow(title: "A")],
+        priorSample: nil,
+        now: firstTime
+    )
+    try expect(first.profileToSave == nil, "first learning sample should not save before debounce")
+
+    let moved = WindowSnapshot(
+        appName: "Fixture App",
+        bundleIdentifier: "dev.screenmem.fixture",
+        processIdentifier: 300,
+        appLocalOrdinal: 0,
+        role: "AXWindow",
+        subrole: "AXStandardWindow",
+        titleHint: "A",
+        frame: WindowRect(x: 200, y: 100, width: 400, height: 300),
+        isMinimized: false,
+        canMove: true,
+        canResize: true
+    )
+    let moving = service.poll(
+        mode: .learning,
+        profile: profile,
+        displaySnapshots: [snapshot],
+        windowSnapshots: [moved],
+        priorSample: first.sample,
+        now: firstTime.addingTimeInterval(0.5)
+    )
+    try expect(moving.profileToSave == nil, "changed state inside debounce should not save")
+
+    let stable = service.poll(
+        mode: .learning,
+        profile: profile,
+        displaySnapshots: [snapshot],
+        windowSnapshots: [moved],
+        priorSample: moving.sample,
+        now: firstTime.addingTimeInterval(1.6)
+    )
+    try expect(stable.profileToSave?.windowStates.count == 1, "stable final state should save after debounce")
+    let expectedX = moved.frame.x / snapshot.visibleFrame.width
+    try expectClose(
+        stable.profileToSave?.windowStates.first?.normalizedFrame.x ?? -1,
+        expectedX,
+        "saved state should reflect final stable window position"
+    )
+}
+
+func checkLearningAssignsWindowsToIntersectingDisplay() throws {
+    let leftDisplay = sampleDisplayIdentity("L", builtIn: true)
+    let rightDisplay = sampleDisplayIdentity("R")
+    let leftSnapshot = DisplaySnapshot(
+        identity: leftDisplay,
+        frame: DisplayRect(x: 0, y: 0, width: 1000, height: 800),
+        visibleFrame: DisplayRect(x: 0, y: 0, width: 1000, height: 800),
+        isMain: true,
+        orderIndex: 0
+    )
+    let rightSnapshot = DisplaySnapshot(
+        identity: rightDisplay,
+        frame: DisplayRect(x: 1000, y: 0, width: 1000, height: 800),
+        visibleFrame: DisplayRect(x: 1000, y: 0, width: 1000, height: 800),
+        isMain: false,
+        orderIndex: 1
+    )
+    let profile = Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000012")!,
+        name: "Dual Display",
+        createdAt: Date(timeIntervalSince1970: 1),
+        displayFingerprint: DisplaySetFingerprint.exact(for: [leftDisplay, rightDisplay]),
+        displays: [leftDisplay, rightDisplay],
+        windowStates: []
+    )
+    let service = ProfileLearningService(configuration: ProfileLearningConfiguration(debounceInterval: 1))
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+    let window = learningWindow(title: "Right", x: 1200, y: 100)
+    let first = service.poll(
+        mode: .learning,
+        profile: profile,
+        displaySnapshots: [leftSnapshot, rightSnapshot],
+        windowSnapshots: [window],
+        priorSample: nil,
+        now: now
+    )
+    let stable = service.poll(
+        mode: .learning,
+        profile: profile,
+        displaySnapshots: [leftSnapshot, rightSnapshot],
+        windowSnapshots: [window],
+        priorSample: first.sample,
+        now: now.addingTimeInterval(1.2)
+    )
+
+    let learnedState = try expectValue(stable.profileToSave?.windowStates.first, "stable multi-display state should save")
+    try expect(learnedState.displayStableID == rightDisplay.stableID, "window should be learned against intersecting display")
+    try expectClose(learnedState.normalizedFrame.x, 0.2, "window x should be normalized against right display")
+}
+
+func checkLearningTombstonesRecentlyMissingWindows() throws {
+    let display = sampleDisplayIdentity("L", builtIn: true)
+    let snapshot = sampleDisplaySnapshot(display, orderIndex: 0)
+    let service = ProfileLearningService(
+        configuration: ProfileLearningConfiguration(debounceInterval: 1, tombstoneGracePeriod: 5)
+    )
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+    let state = WindowState(
+        identity: LearnedWindowIdentity(snapshot: learningWindow(title: "A")),
+        normalizedFrame: NormalizedRect(x: 0.1, y: 0.1, width: 0.4, height: 0.3),
+        displayStableID: display.stableID,
+        learnedAt: now,
+        tombstone: nil
+    )
+    let profile = Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!,
+        name: "Learning",
+        createdAt: now,
+        displayFingerprint: DisplaySetFingerprint.exact(for: [display]),
+        displays: [display],
+        windowStates: [state]
+    )
+
+    let missing = service.poll(
+        mode: .learning,
+        profile: profile,
+        displaySnapshots: [snapshot],
+        windowSnapshots: [],
+        priorSample: nil,
+        now: now.addingTimeInterval(1)
+    )
+    try expect(missing.sample?.windowStates.first?.tombstone != nil, "missing window should become tombstoned")
+
+    let retained = service.poll(
+        mode: .learning,
+        profile: profile,
+        displaySnapshots: [snapshot],
+        windowSnapshots: [],
+        priorSample: missing.sample,
+        now: now.addingTimeInterval(2.2)
+    )
+    try expect(retained.profileToSave?.windowStates.count == 1, "recent tombstone should be retained")
+
+    let expired = service.poll(
+        mode: .learning,
+        profile: profile,
+        displaySnapshots: [snapshot],
+        windowSnapshots: [],
+        priorSample: retained.sample,
+        now: now.addingTimeInterval(8)
+    )
+    try expect(expired.profileToSave?.windowStates.isEmpty == true, "expired tombstone should be deleted")
+}
+
 func checkUnknownDisplaySetDoesNotCreateProfileAutomatically() throws {
     let tempRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent("ScreenMemShellChecks-\(UUID().uuidString)")
@@ -285,6 +553,11 @@ enum ScreenMemShellChecks {
             ("display fingerprint is order independent", checkDisplayFingerprintIsOrderIndependent),
             ("current display sampler enumerates displays", checkCurrentDisplaySamplerEnumeratesDisplays),
             ("profile store creates and loads user profiles", checkProfileStoreCreatesAndLoadsUserProfiles),
+            ("normalized rect clamps against visible frame", checkNormalizedRectClampsAgainstVisibleFrame),
+            ("learning writes only for exact learning state", checkLearningWritesOnlyForExactLearningState),
+            ("learning debounces stable window state", checkLearningDebouncesStableWindowState),
+            ("learning assigns windows to intersecting display", checkLearningAssignsWindowsToIntersectingDisplay),
+            ("learning tombstones recently missing windows", checkLearningTombstonesRecentlyMissingWindows),
             ("unknown display set does not create a profile automatically", checkUnknownDisplaySetDoesNotCreateProfileAutomatically),
             ("required module folders exist", checkRequiredModuleFoldersExist),
             ("README documents MVP scope and non-goals", checkReadmeDocumentsMvpScopeAndNonGoals),

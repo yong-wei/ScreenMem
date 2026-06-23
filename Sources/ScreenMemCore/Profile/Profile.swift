@@ -6,7 +6,7 @@ public struct Profile: Codable, Equatable, Identifiable, Sendable {
     public let createdAt: Date
     public let displayFingerprint: String
     public let displays: [DisplayIdentity]
-    public let windowStates: [WindowStatePlaceholder]
+    public let windowStates: [WindowState]
 
     public init(
         id: UUID,
@@ -14,7 +14,7 @@ public struct Profile: Codable, Equatable, Identifiable, Sendable {
         createdAt: Date,
         displayFingerprint: String,
         displays: [DisplayIdentity],
-        windowStates: [WindowStatePlaceholder]
+        windowStates: [WindowState]
     ) {
         self.id = id
         self.name = name
@@ -23,8 +23,4 @@ public struct Profile: Codable, Equatable, Identifiable, Sendable {
         self.displays = displays
         self.windowStates = windowStates
     }
-}
-
-public struct WindowStatePlaceholder: Codable, Equatable, Sendable {
-    public init() {}
 }

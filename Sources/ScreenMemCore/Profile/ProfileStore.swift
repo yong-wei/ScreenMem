@@ -67,6 +67,15 @@ public struct ProfileStore: Sendable {
         }
     }
 
+    public func updateProfile(_ updatedProfile: Profile) throws {
+        var profiles = try loadProfiles()
+        guard let index = profiles.firstIndex(where: { $0.id == updatedProfile.id }) else {
+            return
+        }
+        profiles[index] = updatedProfile
+        try saveProfiles(profiles)
+    }
+
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
