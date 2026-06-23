@@ -28,9 +28,11 @@ public struct ProfileLearningService: Sendable {
         displaySnapshots: [DisplaySnapshot],
         windowSnapshots: [WindowSnapshot],
         priorSample: LearningSample?,
-        now: Date
+        now: Date,
+        pauseState: AutomationPauseState = .none
     ) -> LearningPollResult {
         guard mode == .learning,
+              pauseState.allowsLearning,
               let profile,
               profile.displayFingerprint == DisplaySetFingerprint.exact(for: displaySnapshots) else {
             return LearningPollResult(profileToSave: nil, sample: nil)

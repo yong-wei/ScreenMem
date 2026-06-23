@@ -15,8 +15,17 @@ public struct WindowRestorationEngine: Sendable {
     public func restoreExactProfile(
         profile: Profile?,
         displaySnapshots: [DisplaySnapshot],
-        currentWindows: [WindowSnapshot]
+        currentWindows: [WindowSnapshot],
+        pauseState: AutomationPauseState = .none
     ) -> RestoreReport {
+        guard pauseState.allowsRestore else {
+            return RestoreReport(
+                restoredWindows: [],
+                skippedWindows: [SkippedRestoreReport(identity: nil, reason: .automationPaused)],
+                failedWindows: []
+            )
+        }
+
         guard let profile,
               profile.displayFingerprint == DisplaySetFingerprint.exact(for: displaySnapshots) else {
             return RestoreReport(
@@ -38,12 +47,14 @@ public struct WindowRestorationEngine: Sendable {
         profile: Profile?,
         displaySnapshots: [DisplaySnapshot],
         currentWindows: [WindowSnapshot],
-        startedAt: Date
+        startedAt: Date,
+        pauseState: AutomationPauseState = .none
     ) -> RestorationRunResult {
         let report = restoreExactProfile(
             profile: profile,
             displaySnapshots: displaySnapshots,
-            currentWindows: currentWindows
+            currentWindows: currentWindows,
+            pauseState: pauseState
         )
         let monitor = profile.map {
             LateWindowMonitor.start(profile: $0, restoredReport: report, startedAt: startedAt)
@@ -54,9 +65,18 @@ public struct WindowRestorationEngine: Sendable {
     public func restorePartialProfile(
         profile: Profile,
         displaySnapshots: [DisplaySnapshot],
-        currentWindows: [WindowSnapshot]
+        currentWindows: [WindowSnapshot],
+        pauseState: AutomationPauseState = .none
     ) -> RestoreReport {
-        restore(
+        guard pauseState.allowsRestore else {
+            return RestoreReport(
+                restoredWindows: [],
+                skippedWindows: [SkippedRestoreReport(identity: nil, reason: .automationPaused)],
+                failedWindows: []
+            )
+        }
+
+        return restore(
             profile: profile,
             displaySnapshots: displaySnapshots,
             currentWindows: currentWindows,
@@ -68,12 +88,14 @@ public struct WindowRestorationEngine: Sendable {
         profile: Profile,
         displaySnapshots: [DisplaySnapshot],
         currentWindows: [WindowSnapshot],
-        startedAt: Date
+        startedAt: Date,
+        pauseState: AutomationPauseState = .none
     ) -> RestorationRunResult {
         let report = restorePartialProfile(
             profile: profile,
             displaySnapshots: displaySnapshots,
-            currentWindows: currentWindows
+            currentWindows: currentWindows,
+            pauseState: pauseState
         )
         let monitor = LateWindowMonitor.start(profile: profile, restoredReport: report, startedAt: startedAt)
         return RestorationRunResult(report: report, lateWindowMonitor: monitor.pendingStates.isEmpty ? nil : monitor)

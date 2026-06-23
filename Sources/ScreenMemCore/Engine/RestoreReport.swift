@@ -7,6 +7,7 @@ public enum RestoreSkipReason: String, Codable, Equatable, Sendable {
     case noCurrentWindowMatch
     case monitoringExpired
     case manualMovementDetected
+    case automationPaused
 }
 
 public enum RestoreFailureReason: String, Codable, Equatable, Sendable {

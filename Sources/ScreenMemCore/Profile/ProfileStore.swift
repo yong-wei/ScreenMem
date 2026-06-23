@@ -76,6 +76,42 @@ public struct ProfileStore: Sendable {
         try saveProfiles(profiles)
     }
 
+    public func renameProfile(id: UUID, to name: String) throws {
+        guard let profile = try loadProfiles().first(where: { $0.id == id }) else {
+            return
+        }
+        try updateProfile(Profile(
+            id: profile.id,
+            name: name,
+            createdAt: profile.createdAt,
+            displayFingerprint: profile.displayFingerprint,
+            displays: profile.displays,
+            windowStates: profile.windowStates
+        ))
+    }
+
+    public func deleteProfile(id: UUID) throws {
+        try saveProfiles(try loadProfiles().filter { $0.id != id })
+    }
+
+    public func duplicateProfile(id: UUID, newID: UUID = UUID(), createdAt: Date = Date()) throws -> Profile? {
+        guard let profile = try loadProfiles().first(where: { $0.id == id }) else {
+            return nil
+        }
+        let copy = Profile(
+            id: newID,
+            name: "\(profile.name) Copy",
+            createdAt: createdAt,
+            displayFingerprint: profile.displayFingerprint,
+            displays: profile.displays,
+            windowStates: profile.windowStates
+        )
+        var profiles = try loadProfiles()
+        profiles.append(copy)
+        try saveProfiles(profiles)
+        return copy
+    }
+
     private static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

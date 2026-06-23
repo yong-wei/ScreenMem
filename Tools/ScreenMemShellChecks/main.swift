@@ -26,20 +26,105 @@ func checkDefaultStatusMenuContainsStatusTextAndQuitCommand() throws {
     let menu = StatusMenuModel.default
 
     try expect(menu.statusTitle == "ScreenMem: Ready", "status title should describe the static menu state")
-    try expect(
-        menu.items.map(\.title) == [
-            "ScreenMem: Ready",
-            "Create Profile from Current Displays",
-            "Quit ScreenMem"
-        ],
-        "menu should contain status text, profile creation, and Quit"
-    )
+    try expect(menu.items.map(\.title).contains("Profile: None"), "menu should show current profile")
+    try expect(menu.items.map(\.title).contains("State: Learning"), "menu should show learning state")
+    try expect(menu.items.map(\.title).contains("Displays: 0"), "menu should show display count")
+    try expect(menu.items.contains { $0.command == .restoreNow }, "menu should contain Restore Now")
+    try expect(menu.items.contains { $0.command == .createProfileFromCurrentDisplays }, "menu should contain profile creation")
+    try expect(menu.items.contains { $0.command == .togglePauseRestore }, "menu should contain Pause Restore")
+    try expect(menu.items.contains { $0.command == .togglePauseLearning }, "menu should contain Pause Learning")
+    try expect(menu.items.contains { $0.command == .togglePauseAll }, "menu should contain Pause All")
     try expect(menu.items.first?.isEnabled == false, "status menu item should be disabled")
-    try expect(
-        menu.items.dropFirst().first?.command == .createProfileFromCurrentDisplays,
-        "second menu item should create a display profile"
-    )
     try expect(menu.items.last?.command == .quit, "last menu item should quit the app")
+}
+
+func checkMenuStatusShowsProfileStateDisplayAndReport() throws {
+    let report = RestoreReport(
+        restoredWindows: [RestoredWindowReport(identity: LearnedWindowIdentity(
+            bundleIdentifier: "dev.screenmem.fixture",
+            processIdentifier: 1,
+            appLocalOrdinal: 0,
+            titleHint: "Editor"
+        ), targetFrame: WindowRect(x: 0, y: 0, width: 100, height: 100))],
+        skippedWindows: [SkippedRestoreReport(identity: nil, reason: .noExactProfile)],
+        failedWindows: []
+    )
+    let menu = StatusMenuModel.make(viewState: MenuViewState(
+        profileName: "Desk",
+        automationState: .learning,
+        displayCount: 2,
+        permissionState: .granted,
+        pauseState: .none,
+        recentReport: RestoreReportViewModel(report: report)
+    ))
+    let titles = menu.items.map(\.title)
+
+    try expect(titles.contains("Profile: Desk"), "menu should show exact profile name")
+    try expect(titles.contains("State: Learning"), "menu should show automation state")
+    try expect(titles.contains("Displays: 2"), "menu should show display count")
+    try expect(titles.contains("Latest Restore: Restored 1, skipped 1, failed 0"), "menu should show recent restore summary")
+}
+
+func checkPauseStateGuardsRestoreAndLearning() throws {
+    let pauseAll = AutomationPauseState(allPaused: true)
+    let engine = WindowRestorationEngine { _, _ in .moved }
+    let restoreReport = engine.restoreExactProfile(
+        profile: nil,
+        displaySnapshots: [],
+        currentWindows: [],
+        pauseState: pauseAll
+    )
+    try expect(restoreReport.skippedWindows.map(\.reason) == [.automationPaused], "pause all should block restore")
+
+    let display = sampleDisplayIdentity("Pause", builtIn: true)
+    let sample = sampleDisplaySnapshot(display, orderIndex: 0)
+    let learning = ProfileLearningService().poll(
+        mode: .learning,
+        profile: learningProfile(display: display),
+        displaySnapshots: [sample],
+        windowSnapshots: [learningWindow(title: "A")],
+        priorSample: nil,
+        now: Date(timeIntervalSince1970: 1),
+        pauseState: pauseAll
+    )
+    try expect(learning.profileToSave == nil && learning.sample == nil, "pause all should block learning")
+}
+
+func checkRestoreReportViewModelExplainsOutcomes() throws {
+    let identity = LearnedWindowIdentity(
+        bundleIdentifier: "dev.screenmem.fixture",
+        processIdentifier: 1,
+        appLocalOrdinal: 0,
+        titleHint: "Editor"
+    )
+    let viewModel = RestoreReportViewModel(report: RestoreReport(
+        restoredWindows: [RestoredWindowReport(identity: identity, targetFrame: WindowRect(x: 0, y: 0, width: 100, height: 100))],
+        skippedWindows: [SkippedRestoreReport(identity: identity, reason: .noCurrentWindowMatch)],
+        failedWindows: [FailedRestoreReport(identity: identity, reason: .moveRejected)]
+    ))
+
+    try expect(viewModel.summary == "Restored 1, skipped 1, failed 1", "report summary should count outcomes")
+    try expect(viewModel.rows.contains(RestoreReportRow(title: "Editor", outcome: "Skipped: noCurrentWindowMatch")), "report should explain skipped reason")
+    try expect(viewModel.rows.contains(RestoreReportRow(title: "Editor", outcome: "Failed: moveRejected")), "report should explain failure reason")
+}
+
+func checkProfileManagementActions() throws {
+    let display = sampleDisplayIdentity("Profile", builtIn: true)
+    let profile = learningProfile(display: display)
+    let state = ProfileManagementState(profiles: [profile], manualRestoreSourceID: nil)
+    let renamed = state.renamed(id: profile.id, to: "Renamed")
+    let duplicated = renamed.duplicated(
+        id: profile.id,
+        newID: UUID(uuidString: "00000000-0000-0000-0000-000000000050")!,
+        createdAt: Date(timeIntervalSince1970: 5)
+    )
+    let selected = duplicated.selectedManualRestoreSource(id: profile.id)
+    let deleted = selected.deleted(id: profile.id)
+
+    try expect(renamed.profiles.first?.name == "Renamed", "profile view model should rename")
+    try expect(duplicated.profiles.count == 2, "profile view model should duplicate")
+    try expect(selected.manualRestoreSourceID == profile.id, "profile view model should select manual restore source")
+    try expect(deleted.profiles.count == 1 && deleted.manualRestoreSourceID == nil, "profile view model should delete and clear manual source")
 }
 
 func checkPermissionMissingMenuExposesSettingsAction() throws {
@@ -1069,6 +1154,16 @@ func checkBuildRunnerBuildsAndLaunchesScreenMemExecutable() throws {
     try expect(!script.contains("launchctl submit"), "runner should not depend on launchd for local debug launch")
 }
 
+func checkStatusMenuRebuildReusesStatusItem() throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let controller = try String(contentsOf: root.appendingPathComponent("Sources/ScreenMemApp/UI/StatusBarController.swift"))
+    let application = try String(contentsOf: root.appendingPathComponent("Sources/ScreenMemApp/AppEntry/ScreenMemApplication.swift"))
+
+    try expect(controller.contains("func update(menuModel: StatusMenuModel)"), "status controller should update menu without creating a new item")
+    try expect(application.contains("if let statusBarController"), "application should reuse the existing status controller")
+    try expect(application.contains("statusBarController.update(menuModel: menuModel)"), "menu rebuild should update existing status item")
+}
+
 func checkCodexEnvironmentExposesAppRunner() throws {
     let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
     let environment = try String(contentsOf: root.appendingPathComponent(".codex/environments/environment.toml"))
@@ -1083,6 +1178,10 @@ enum ScreenMemShellChecks {
     static func main() {
         let checks: [(String, () throws -> Void)] = [
             ("default status menu contains status text and quit command", checkDefaultStatusMenuContainsStatusTextAndQuitCommand),
+            ("menu status shows profile state display and report", checkMenuStatusShowsProfileStateDisplayAndReport),
+            ("pause state guards restore and learning", checkPauseStateGuardsRestoreAndLearning),
+            ("restore report view model explains outcomes", checkRestoreReportViewModelExplainsOutcomes),
+            ("profile management actions", checkProfileManagementActions),
             ("permission missing menu exposes settings action", checkPermissionMissingMenuExposesSettingsAction),
             ("permission missing prevents window enumeration", checkPermissionMissingPreventsWindowEnumeration),
             ("ordinary window filtering and ordinals", checkOrdinaryWindowFilteringAndOrdinals),
@@ -1112,6 +1211,7 @@ enum ScreenMemShellChecks {
             ("required module folders exist", checkRequiredModuleFoldersExist),
             ("README documents MVP scope and non-goals", checkReadmeDocumentsMvpScopeAndNonGoals),
             ("build runner builds and launches ScreenMem executable", checkBuildRunnerBuildsAndLaunchesScreenMemExecutable),
+            ("status menu rebuild reuses status item", checkStatusMenuRebuildReusesStatusItem),
             ("Codex environment exposes app runner", checkCodexEnvironmentExposesAppRunner)
         ]
 
