@@ -534,6 +534,24 @@ final class MoveAttemptRecorder: @unchecked Sendable {
     }
 }
 
+final class MoveTargetRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames: [WindowRect] = []
+
+    func append(_ frame: WindowRect) {
+        lock.lock()
+        frames.append(frame)
+        lock.unlock()
+    }
+
+    func snapshot() -> [WindowRect] {
+        lock.lock()
+        let currentFrames = frames
+        lock.unlock()
+        return currentFrames
+    }
+}
+
 func checkWindowMatcherMatchesLearnedIdentity() throws {
     let first = learningWindow(title: "A", ordinal: 0)
     let second = learningWindow(title: "B", ordinal: 1)
@@ -626,6 +644,182 @@ func checkRestorationSkipsAmbiguousDisplaysWithoutCrashing() throws {
 
     try expect(report.restoredWindows.isEmpty, "ambiguous display target should not restore")
     try expect(report.skippedWindows.map(\.reason) == [.displayAmbiguous], "ambiguous display target should be reported")
+}
+
+func checkProfileSelectorChoosesExactPartialAndNone() throws {
+    let builtIn = sampleDisplayIdentity("BuiltIn", builtIn: true)
+    let external = sampleDisplayIdentity("External")
+    let iPad = sampleDisplayIdentity("iPad")
+    let olderProfile = Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000030")!,
+        name: "Older",
+        createdAt: Date(timeIntervalSince1970: 1),
+        displayFingerprint: DisplaySetFingerprint.exact(for: [builtIn]),
+        displays: [builtIn],
+        windowStates: []
+    )
+    let officeProfile = Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000031")!,
+        name: "Office",
+        createdAt: Date(timeIntervalSince1970: 2),
+        displayFingerprint: DisplaySetFingerprint.exact(for: [builtIn, external]),
+        displays: [builtIn, external],
+        windowStates: []
+    )
+    let exact = ProfileSelector.select(
+        profiles: [olderProfile, officeProfile],
+        displaySnapshots: [sampleDisplaySnapshot(builtIn, orderIndex: 0), sampleDisplaySnapshot(external, orderIndex: 1)]
+    )
+    try expect(exact == .exact(officeProfile), "selector should prefer exact profile")
+
+    let partial = ProfileSelector.select(
+        profiles: [olderProfile, officeProfile],
+        displaySnapshots: [
+            sampleDisplaySnapshot(builtIn, orderIndex: 0),
+            sampleDisplaySnapshot(external, orderIndex: 1),
+            sampleDisplaySnapshot(iPad, orderIndex: 2)
+        ]
+    )
+    try expect(partial == .partial(officeProfile), "selector should choose largest partial overlap")
+
+    let none = ProfileSelector.select(
+        profiles: [olderProfile, officeProfile],
+        displaySnapshots: [sampleDisplaySnapshot(sampleDisplayIdentity("Unknown"), orderIndex: 0)]
+    )
+    try expect(none == .none, "selector should return none with no overlap")
+}
+
+func checkPartialRestoreFallsBackToKnownBuiltInDisplay() throws {
+    let builtIn = sampleDisplayIdentity("BuiltIn", builtIn: true)
+    let absentExternal = sampleDisplayIdentity("External")
+    let iPad = sampleDisplayIdentity("iPad")
+    let currentBuiltIn = DisplaySnapshot(
+        identity: builtIn,
+        frame: DisplayRect(x: 0, y: 0, width: 1000, height: 800),
+        visibleFrame: DisplayRect(x: 0, y: 0, width: 1000, height: 800),
+        isMain: true,
+        orderIndex: 0
+    )
+    let newDisplay = DisplaySnapshot(
+        identity: iPad,
+        frame: DisplayRect(x: 1000, y: 0, width: 1000, height: 800),
+        visibleFrame: DisplayRect(x: 1000, y: 0, width: 1000, height: 800),
+        isMain: false,
+        orderIndex: 1
+    )
+    let window = learningWindow(title: "External Window")
+    let state = WindowState(
+        identity: LearnedWindowIdentity(snapshot: window),
+        normalizedFrame: NormalizedRect(x: 0.1, y: 0.1, width: 0.4, height: 0.3),
+        displayStableID: absentExternal.stableID,
+        learnedAt: Date(timeIntervalSince1970: 3),
+        tombstone: nil
+    )
+    let profile = Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000032")!,
+        name: "Partial",
+        createdAt: Date(timeIntervalSince1970: 2),
+        displayFingerprint: DisplaySetFingerprint.exact(for: [builtIn, absentExternal]),
+        displays: [builtIn, absentExternal],
+        windowStates: [state]
+    )
+    let recorder = MoveTargetRecorder()
+    let engine = WindowRestorationEngine { _, frame in
+        recorder.append(frame)
+        return .moved
+    }
+
+    let report = engine.restorePartialProfile(
+        profile: profile,
+        displaySnapshots: [currentBuiltIn, newDisplay],
+        currentWindows: [window]
+    )
+
+    try expect(report.restoredWindows.count == 1, "partial restore should restore missing-target window to fallback")
+    let targetFrame = try expectValue(recorder.snapshot().first, "partial restore should move to a target frame")
+    try expect(targetFrame.x >= currentBuiltIn.visibleFrame.x, "fallback target should be on known built-in display")
+    try expect(
+        targetFrame.x + targetFrame.width <= currentBuiltIn.visibleFrame.x + currentBuiltIn.visibleFrame.width,
+        "fallback target should not use newly introduced display"
+    )
+}
+
+func checkPartialRestoreFallsBackToKnownMainDisplayWithoutBuiltIn() throws {
+    let knownMain = sampleDisplayIdentity("KnownMain")
+    let absentExternal = sampleDisplayIdentity("External")
+    let newDisplayIdentity = sampleDisplayIdentity("New")
+    let currentKnownMain = DisplaySnapshot(
+        identity: knownMain,
+        frame: DisplayRect(x: 0, y: 0, width: 900, height: 700),
+        visibleFrame: DisplayRect(x: 0, y: 0, width: 900, height: 700),
+        isMain: true,
+        orderIndex: 0
+    )
+    let newDisplay = DisplaySnapshot(
+        identity: newDisplayIdentity,
+        frame: DisplayRect(x: 900, y: 0, width: 900, height: 700),
+        visibleFrame: DisplayRect(x: 900, y: 0, width: 900, height: 700),
+        isMain: false,
+        orderIndex: 1
+    )
+    let window = learningWindow(title: "External Window")
+    let profile = Profile(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000033")!,
+        name: "Partial Main",
+        createdAt: Date(timeIntervalSince1970: 2),
+        displayFingerprint: DisplaySetFingerprint.exact(for: [knownMain, absentExternal]),
+        displays: [knownMain, absentExternal],
+        windowStates: [
+            WindowState(
+                identity: LearnedWindowIdentity(snapshot: window),
+                normalizedFrame: NormalizedRect(x: 0.2, y: 0.2, width: 0.4, height: 0.3),
+                displayStableID: absentExternal.stableID,
+                learnedAt: Date(timeIntervalSince1970: 3),
+                tombstone: nil
+            )
+        ]
+    )
+    let recorder = MoveTargetRecorder()
+    let engine = WindowRestorationEngine { _, frame in
+        recorder.append(frame)
+        return .moved
+    }
+
+    let report = engine.restorePartialProfile(
+        profile: profile,
+        displaySnapshots: [currentKnownMain, newDisplay],
+        currentWindows: [window]
+    )
+
+    try expect(report.restoredWindows.count == 1, "partial restore should use known main fallback without built-in")
+    let targetFrame = try expectValue(recorder.snapshot().first, "partial restore should move to known main frame")
+    try expect(targetFrame.x >= currentKnownMain.visibleFrame.x, "fallback target should be on known main display")
+    try expect(
+        targetFrame.x + targetFrame.width <= currentKnownMain.visibleFrame.x + currentKnownMain.visibleFrame.width,
+        "fallback target should not use newly introduced display when no built-in exists"
+    )
+}
+
+func checkPartialRestoreExitsToUnmanagedAndDoesNotLearn() throws {
+    let display = sampleDisplayIdentity("Partial", builtIn: true)
+    let snapshot = sampleDisplaySnapshot(display, orderIndex: 0)
+    let partialCompleted = RestorationStateMachine.restorationCompleted(
+        currentState: .restoring,
+        exactProfileMatched: false
+    )
+    try expect(partialCompleted == .unmanaged, "partial restore should exit to unmanaged")
+    try expect(!RestorationStateMachine.allowsLearningWrites(partialCompleted), "unmanaged state should block learning writes")
+
+    let service = ProfileLearningService()
+    let result = service.poll(
+        mode: .stopped,
+        profile: learningProfile(display: display),
+        displaySnapshots: [snapshot],
+        windowSnapshots: [learningWindow(title: "A")],
+        priorSample: nil,
+        now: Date(timeIntervalSince1970: 4)
+    )
+    try expect(result.profileToSave == nil, "partial unmanaged flow should not write profile state")
 }
 
 func checkUnknownDisplaySetDoesNotCreateProfileAutomatically() throws {
@@ -725,6 +919,10 @@ enum ScreenMemShellChecks {
             ("exact profile restores matched windows and continues after failure", checkExactProfileRestoresMatchedWindowsAndContinuesAfterFailure),
             ("restoration requires exact profile", checkRestorationRequiresExactProfile),
             ("restoration skips ambiguous displays without crashing", checkRestorationSkipsAmbiguousDisplaysWithoutCrashing),
+            ("profile selector chooses exact partial and none", checkProfileSelectorChoosesExactPartialAndNone),
+            ("partial restore falls back to known built-in display", checkPartialRestoreFallsBackToKnownBuiltInDisplay),
+            ("partial restore falls back to known main display without built-in", checkPartialRestoreFallsBackToKnownMainDisplayWithoutBuiltIn),
+            ("partial restore exits to unmanaged and does not learn", checkPartialRestoreExitsToUnmanagedAndDoesNotLearn),
             ("unknown display set does not create a profile automatically", checkUnknownDisplaySetDoesNotCreateProfileAutomatically),
             ("required module folders exist", checkRequiredModuleFoldersExist),
             ("README documents MVP scope and non-goals", checkReadmeDocumentsMvpScopeAndNonGoals),

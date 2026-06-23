@@ -2,6 +2,7 @@ import Foundation
 
 public enum RestorationState: Equatable, Sendable {
     case idle
+    case unmanaged
     case learning
     case protectingDisplayChange(changedAt: Date)
     case waitingForStableDisplays(stableSince: Date)
@@ -11,7 +12,7 @@ public enum RestorationState: Equatable, Sendable {
 public enum RestorationStateMachine {
     public static func displayChangeDetected(currentState: RestorationState, now: Date) -> RestorationState {
         switch currentState {
-        case .idle, .learning, .waitingForStableDisplays, .restoring:
+        case .idle, .unmanaged, .learning, .waitingForStableDisplays, .restoring:
             return .protectingDisplayChange(changedAt: now)
         case .protectingDisplayChange:
             return .protectingDisplayChange(changedAt: now)
@@ -34,8 +35,11 @@ public enum RestorationStateMachine {
         }
     }
 
-    public static func restorationCompleted(currentState: RestorationState) -> RestorationState {
-        currentState == .restoring ? .learning : currentState
+    public static func restorationCompleted(currentState: RestorationState, exactProfileMatched: Bool = true) -> RestorationState {
+        guard currentState == .restoring else {
+            return currentState
+        }
+        return exactProfileMatched ? .learning : .unmanaged
     }
 
     public static func allowsLearningWrites(_ state: RestorationState) -> Bool {

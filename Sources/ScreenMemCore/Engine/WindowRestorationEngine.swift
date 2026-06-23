@@ -26,6 +26,33 @@ public struct WindowRestorationEngine: Sendable {
             )
         }
 
+        return restore(
+            profile: profile,
+            displaySnapshots: displaySnapshots,
+            currentWindows: currentWindows,
+            allowFallbackDisplays: false
+        )
+    }
+
+    public func restorePartialProfile(
+        profile: Profile,
+        displaySnapshots: [DisplaySnapshot],
+        currentWindows: [WindowSnapshot]
+    ) -> RestoreReport {
+        restore(
+            profile: profile,
+            displaySnapshots: displaySnapshots,
+            currentWindows: currentWindows,
+            allowFallbackDisplays: true
+        )
+    }
+
+    private func restore(
+        profile: Profile,
+        displaySnapshots: [DisplaySnapshot],
+        currentWindows: [WindowSnapshot],
+        allowFallbackDisplays: Bool
+    ) -> RestoreReport {
         let displaysByStableID = Dictionary(grouping: displaySnapshots, by: { $0.identity.stableID })
         let matches = WindowMatcher.match(currentWindows: currentWindows, learnedStates: profile.windowStates)
         let matchedIdentities = Set(matches.map { $0.state.identity })
@@ -39,6 +66,11 @@ public struct WindowRestorationEngine: Sendable {
 
         for match in matches {
             guard let displays = displaysByStableID[match.state.displayStableID], !displays.isEmpty else {
+                if allowFallbackDisplays,
+                   let fallbackDisplay = fallbackDisplay(from: displaySnapshots, profile: profile) {
+                    restore(match: match, display: fallbackDisplay, restored: &restored, failed: &failed)
+                    continue
+                }
                 skipped.append(SkippedRestoreReport(identity: match.state.identity, reason: .displayMissing))
                 continue
             }
@@ -47,15 +79,31 @@ public struct WindowRestorationEngine: Sendable {
                 continue
             }
 
-            let targetFrame = WindowGeometryNormalizer.denormalize(match.state.normalizedFrame, in: display.visibleFrame)
-            switch moveWindow(match.snapshot, targetFrame) {
-            case .moved:
-                restored.append(RestoredWindowReport(identity: match.state.identity, targetFrame: targetFrame))
-            case .rejected:
-                failed.append(FailedRestoreReport(identity: match.state.identity, reason: .moveRejected))
-            }
+            restore(match: match, display: display, restored: &restored, failed: &failed)
         }
 
         return RestoreReport(restoredWindows: restored, skippedWindows: skipped, failedWindows: failed)
+    }
+
+    private func restore(
+        match: WindowMatch,
+        display: DisplaySnapshot,
+        restored: inout [RestoredWindowReport],
+        failed: inout [FailedRestoreReport]
+    ) {
+        let targetFrame = WindowGeometryNormalizer.denormalize(match.state.normalizedFrame, in: display.visibleFrame)
+        switch moveWindow(match.snapshot, targetFrame) {
+        case .moved:
+            restored.append(RestoredWindowReport(identity: match.state.identity, targetFrame: targetFrame))
+        case .rejected:
+            failed.append(FailedRestoreReport(identity: match.state.identity, reason: .moveRejected))
+        }
+    }
+
+    private func fallbackDisplay(from displaySnapshots: [DisplaySnapshot], profile: Profile) -> DisplaySnapshot? {
+        let knownDisplayIDs = Set(profile.displays.map(\.stableID))
+        let knownDisplays = displaySnapshots.filter { knownDisplayIDs.contains($0.identity.stableID) }
+        return knownDisplays.first(where: { $0.identity.isBuiltIn })
+            ?? knownDisplays.first(where: \.isMain)
     }
 }
